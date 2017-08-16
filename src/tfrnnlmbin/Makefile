@@ -14,7 +14,7 @@ TENSORFLOW = $(shell pwd)/../../tools/tensorflow
 
 all:
 
-EXTRA_CXXFLAGS = -Wno-sign-compare -I$(TENSORFLOW)/bazel-tensorflow/external/protobuf/src \
+EXTRA_CXXFLAGS = -Wno-sign-compare -I$(TENSORFLOW)/bazel-tensorflow/external/protobuf_archive/src \
                  -I$(TENSORFLOW)/bazel-genfiles -I$(TENSORFLOW) \
                  -I$(TENSORFLOW)/tensorflow/contrib/makefile/downloads/eigen/
 include ../kaldi.mk
@@ -29,7 +29,7 @@ ADDLIBS = ../lat/kaldi-lat.a ../lm/kaldi-lm.a ../fstext/kaldi-fstext.a \
           ../hmm/kaldi-hmm.a ../tree/kaldi-tree.a ../util/kaldi-util.a \
           ../matrix/kaldi-matrix.a \
           ../base/kaldi-base.a ../tfrnnlm/kaldi-tensorflow-rnnlm.a \
-          $(shell pwd)/../../tools/tensorflow/bazel-bin/tensorflow/libtensorflow_cc.so
+          $(shell pwd)/../../tools/tensorflow/bazel-bin/tensorflow/tensorflow_cc.so
 
 LDLIBS +=  -lz -ldl -fPIC -lrt
 LDLIBS += -L$(TENSORFLOW)/bazel-bin/tensorflow -ltensorflow_cc

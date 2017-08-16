@@ -16,7 +16,7 @@ TENSORFLOW = ../../tools/tensorflow
 
 all:
 
-EXTRA_CXXFLAGS = -Wno-sign-compare -I$(TENSORFLOW)/bazel-tensorflow/external/protobuf/src \
+EXTRA_CXXFLAGS = -Wno-sign-compare -I$(TENSORFLOW)/bazel-tensorflow/external/protobuf_archive/src \
                  -I$(TENSORFLOW)/bazel-genfiles -I$(TENSORFLOW) \
                  -I$(TENSORFLOW)/tensorflow/contrib/makefile/downloads/eigen/
 
@@ -26,7 +26,7 @@ TESTFILES =
 
 LIBNAME = kaldi-tensorflow-rnnlm
 
-ADDLIBS = ../lm/kaldi-lm.a ../util/kaldi-util.a ../thread/kaldi-thread.a \
+ADDLIBS = ../lm/kaldi-lm.a ../util/kaldi-util.a  \
           ../matrix/kaldi-matrix.a ../base/kaldi-base.a \
           $(shell pwd)/../../tools/tensorflow/bazel-bin/tensorflow/tensorflow_cc.so
 
