@@ -289,17 +289,23 @@ def main(_):
   with tf.Graph().as_default():
     initializer = tf.random_uniform_initializer(-config.init_scale,
                                                 config.init_scale)
+    partitioner = tf.variable_axis_size_partitioner((64 << 20) - 1)
 
     with tf.name_scope("Train"):
       train_input = RnnlmInput(config=config, data=train_data, name="TrainInput")
-      with tf.variable_scope("Model", reuse=None, initializer=initializer):
+      with tf.variable_scope("Model", reuse=None,
+                             initializer=initializer, 
+                             partitioner=partitioner):
         m = RnnlmModel(is_training=True, config=config, input_=train_input)
       tf.summary.scalar("Training Loss", m.cost)
       tf.summary.scalar("Learning Rate", m.lr)
 
     with tf.name_scope("Valid"):
       valid_input = RnnlmInput(config=config, data=valid_data, name="ValidInput")
-      with tf.variable_scope("Model", reuse=True, initializer=initializer):
+      with tf.variable_scope("Model",
+                             reuse=True,
+                             initializer=initializer,
+                             partitioner=partitioner):
         mvalid = RnnlmModel(is_training=False, config=config, input_=valid_input)
       tf.summary.scalar("Validation Loss", mvalid.cost)
 
