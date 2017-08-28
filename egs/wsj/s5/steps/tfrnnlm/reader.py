@@ -22,8 +22,10 @@ from __future__ import print_function
 
 import collections
 import os
+import sys
 
 import tensorflow as tf
+import numpy as np
 
 def _read_words(filename):
   with tf.gfile.GFile(filename, "r") as f:
@@ -61,7 +63,7 @@ def rnnlm_raw_data(data_path, vocab_path):
   return train_data, valid_data, vocabulary, word_to_id
 
 
-def rnnlm_producer(raw_data, batch_size, num_steps, name=None):
+def rnnlm_producer_old(raw_data, batch_size, num_steps, name=None):
   """Iterate on the raw RNNLM data.
 
   This chunks up raw_data into batches of examples and returns Tensors that
@@ -76,12 +78,16 @@ def rnnlm_producer(raw_data, batch_size, num_steps, name=None):
   Returns:
     A pair of Tensors, each shaped [batch_size, num_steps]. The second element
     of the tuple is the same data time-shifted to the right by one.
+    And an initializer that resets to beginning of data.
 
   Raises:
     tf.errors.InvalidArgumentError: if batch_size or num_steps are too high.
   """
   with tf.name_scope(name, "RNNLMProducer", [raw_data, batch_size, num_steps]):
+
     raw_data = tf.convert_to_tensor(raw_data, name="raw_data", dtype=tf.int32)
+    print("raw_data:", raw_data)
+    sys.stdout.flush()
 
     data_len = tf.size(raw_data)
     batch_len = data_len // batch_size
@@ -103,3 +109,77 @@ def rnnlm_producer(raw_data, batch_size, num_steps, name=None):
                          [batch_size, (i + 1) * num_steps + 1])
     y.set_shape([batch_size, num_steps])
     return x, y
+
+# new code based on Datasets
+def rnnlm_producer(raw_data, batch_size, num_steps, name=None):
+  """Iterate on the raw RNNLM data.
+
+  This chunks up raw_data into batches of examples and returns Tensors that
+  are drawn from these batches.
+
+  Args:
+    raw_data: one of the raw data outputs from rnnlm_raw_data.
+    batch_size: int, the batch size.
+    num_steps: int, the number of unrolls.
+    name: the name of this operation (optional).
+
+  Returns:
+    A pair of Tensors, each shaped [batch_size, num_steps]. The second element
+    of the tuple is the same data time-shifted to the right by one.
+    And an initializer that resets to beginning of data.
+
+  Raises:
+    tf.errors.InvalidArgumentError: if batch_size or num_steps are too high.
+  """
+  with tf.name_scope(name, "RNNLMProducer", [raw_data, batch_size, num_steps]):
+    
+    raw_data = np.asarray(raw_data, dtype=np.int32)
+    data_len = raw_data.shape[0]
+    batch_len = data_len // batch_size
+    epoch_size = (batch_len - 1) // num_steps
+    print("batch_size, epoch_size, num_steps", batch_size, epoch_size, num_steps)
+    sys.stdout.flush()
+
+    features = np.reshape(raw_data[0 : batch_size * num_steps * epoch_size],
+                          [batch_size * epoch_size, num_steps])
+    labels = np.reshape(raw_data[1 : batch_size * num_steps * epoch_size + 1],
+                        [batch_size * epoch_size, num_steps])
+
+    assertion = tf.assert_positive( epoch_size,
+                                    message="epoch_size == 0, decrease batch_size or num_steps")
+    with tf.control_dependencies([assertion]):
+      epoch_size = tf.identity(epoch_size, name="epoch_size")
+
+    # feedable iterators not yet supported?
+    features_placeholder = tf.placeholder(features.dtype, features.shape)
+    labels_placeholder = tf.placeholder(labels.dtype, labels.shape)
+   
+    dataset = tf.contrib.data.Dataset.from_tensor_slices( \
+                     (features_placeholder, labels_placeholder))
+    #dataset = tf.contrib.data.Dataset.from_tensor_slices((features, labels))
+    dataset = dataset.repeat()     # repeat indefinitely
+    dataset = dataset.batch(batch_size)
+
+    iterator = dataset.make_initializable_iterator()
+    print("Got iterator:", iterator)
+    #initializer = iterator.make_initializer(dataset)
+    initializer = iterator.initializer
+    print("Got initializer:", initializer)
+    sys.stdout.flush()
+    #tf.add_to_collection(tf.GraphKeys.TABLE_INITIALIZERS, iterator.initializer)
+
+    # instead, we use a feedable iterator and make_one_shot()...
+    #handle = tf.placeholder(tf.string, shape=[])
+    #iterator = tf.contrib.data.Iterator.from_string_handle(handle, 
+    #                                    dataset.output_types, dataset.output_shapes)
+    next_element = iterator.get_next()
+    print("Got next_element:", next_element)
+    sys.stdout.flush()
+
+    #data_iterator = dataset.make_one_shot_iterator()
+    #data_handle = sess.run(data_iterator.string_handle())
+
+    feed_dict = {features_placeholder: features, labels_placeholder: labels}
+    #feed_dict = {handle: data_handle}
+    return initializer, next_element, feed_dict
+    
