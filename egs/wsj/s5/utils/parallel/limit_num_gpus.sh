@@ -3,9 +3,15 @@
 # This script functions as a wrapper of a bash command that uses GPUs.
 #
 # It sets the CUDA_VISIBLE_DEVICES variable so that it limits the number of GPUs
-# used for programs. It is neccesary for running a job on the grid if the job
+# used for programs. It is necessary for running a job on the grid if the job
 # would automatically grabs all resources available on the system, e.g. a
 # TensorFlow program.
+
+# G.B. Modified so there is a different delay (multiples of 2 minutes)
+# for each SGE_TASK_ID, to cover the case of a job array where all jobs are
+# looking at the same time at nvidia-smi before selecting a free GPU.
+# Without the delay, a GPU that looks free to several simultaneous nvidia-smi
+# will be allocated by several tasks at the same time and they will fail.
 
 num_gpus=1 # this variable indicates how many GPUs we will allow the command
            # passed to this script will run on. We achieve this by setting the
@@ -16,6 +22,17 @@ if [ "$1" == "--num-gpus" ]; then
   num_gpus=$2
   shift
   shift
+fi
+
+# if SGE_TASK_ID is defined, 
+#  sleep an amount of minutes depending on SGE_TASK_ID value
+if [ $SGE_TASK_ID ]; then
+    if [ $SGE_TASK_ID != "undefined" ] && [ $SGE_TASK_ID -gt 0 ]; then
+        #echo "SGE_TASK_ID=["$SGE_TASK_ID"]"
+        sleep_opt=$(((${SGE_TASK_ID}-1)*180))
+        #echo "Sleep with:"$sleep_opt
+        sleep $sleep_opt
+    fi
 fi
 
 if ! printf "%d" "$num_gpus" >/dev/null || [ $num_gpus -le 0 ]; then
