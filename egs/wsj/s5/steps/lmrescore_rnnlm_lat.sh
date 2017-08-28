@@ -94,7 +94,8 @@ if [ "$oldlm" == "$oldlang/G.fst" ]; then
   $cmd JOB=1:$nj $outdir/log/rescorelm.JOB.log \
     lattice-lmrescore --lm-scale=$oldlm_weight \
     "ark:gunzip -c $indir/lat.JOB.gz|" "$oldlm_command" ark:-  \| \
-    $rescoring_binary $extra_arg --lm-scale=$weight \
+    utils/parallel/limit_num_gpus.sh \
+      $rescoring_binary $extra_arg --lm-scale=$weight \
     --max-ngram-order=$max_ngram_order \
     $first_arg $oldlang/words.txt ark:- "$rnnlm_dir/rnnlm" \
     "ark,t:|gzip -c>$outdir/lat.JOB.gz" || exit 1;
@@ -102,7 +103,8 @@ else
   $cmd JOB=1:$nj $outdir/log/rescorelm.JOB.log \
     lattice-lmrescore-const-arpa --lm-scale=$oldlm_weight \
     "ark:gunzip -c $indir/lat.JOB.gz|" "$oldlm_command" ark:-  \| \
-    $rescoring_binary $extra_arg --lm-scale=$weight \
+     utils/parallel/limit_num_gpus.sh \
+      $rescoring_binary $extra_arg --lm-scale=$weight \
     --max-ngram-order=$max_ngram_order \
     $first_arg $oldlang/words.txt ark:- "$rnnlm_dir/rnnlm" \
     "ark,t:|gzip -c>$outdir/lat.JOB.gz" || exit 1;
