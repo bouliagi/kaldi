@@ -55,12 +55,14 @@ def rnnlm_raw_data(data_path, vocab_path):
 
   train_path = os.path.join(data_path, "train")
   valid_path = os.path.join(data_path, "valid")
+  dev_path = os.path.join(data_path, "dev")
 
   word_to_id = _build_vocab(vocab_path)
   train_data = _file_to_word_ids(train_path, word_to_id)
   valid_data = _file_to_word_ids(valid_path, word_to_id)
+  dev_data =  _file_to_word_ids(dev_path, word_to_id)
   vocabulary = len(word_to_id)
-  return train_data, valid_data, vocabulary, word_to_id
+  return train_data, valid_data, dev_data, vocabulary, word_to_id
 
 
 def rnnlm_producer_old(raw_data, batch_size, num_steps, name=None):
@@ -133,17 +135,28 @@ def rnnlm_producer(raw_data, batch_size, num_steps, name=None):
   """
   with tf.name_scope(name, "RNNLMProducer", [raw_data, batch_size, num_steps]):
     
-    raw_data = np.asarray(raw_data, dtype=np.int32)
-    data_len = raw_data.shape[0]
-    batch_len = data_len // batch_size
-    epoch_size = (batch_len - 1) // num_steps
-    print("batch_size, epoch_size, num_steps", batch_size, epoch_size, num_steps)
-    sys.stdout.flush()
+    #raw_data = np.asarray(raw_data, dtype=np.int32)
+    #data_len = raw_data.shape[0]
+    #batch_len = data_len // batch_size
+    #epoch_size = (batch_len - 1) // num_steps
+    #print("batch_size, epoch_size, num_steps", batch_size, epoch_size, num_steps)
+    #sys.stdout.flush()
 
-    features = np.reshape(raw_data[0 : batch_size * num_steps * epoch_size],
-                          [batch_size * epoch_size, num_steps])
-    labels = np.reshape(raw_data[1 : batch_size * num_steps * epoch_size + 1],
-                        [batch_size * epoch_size, num_steps])
+    #features = np.reshape(raw_data[0 : batch_size * num_steps * epoch_size],
+    #                      [batch_size * epoch_size, num_steps])
+    #labels = np.reshape(raw_data[1 : batch_size * num_steps * epoch_size + 1],
+    #                    [batch_size * epoch_size, num_steps])
+    # To reproduce exactly the data order in _producer_old:
+    data = np.asarray(raw_data, dtype=np.int32)
+    data_len = data.shape[0]
+    batch_len = data_len // batch_size
+    epoch_size = batch_len // num_steps
+    features = np.transpose(np.reshape(data[0:((batch_size-1)*epoch_size*num_steps)],
+                                       [(batch_size-1), epoch_size, num_steps]),
+                            axes=(1,0,2)).ravel().reshape([(batch_size-1)*epoch_size,num_steps])
+    labels = np.transpose(np.reshape(data[1:((batch_size-1)*epoch_size*num_steps)+1],
+                                       [(batch_size-1), epoch_size, num_steps]),
+                            axes=(1,0,2)).ravel().reshape([(batch_size-1)*epoch_size,num_steps])
 
     assertion = tf.assert_positive( epoch_size,
                                     message="epoch_size == 0, decrease batch_size or num_steps")
