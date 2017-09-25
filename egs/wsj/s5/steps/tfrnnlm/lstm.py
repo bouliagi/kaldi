@@ -18,6 +18,7 @@
 # to call the script, do
 # python steps/tfrnnlm/lstm.py --data-path=$datadir \
 #        --save-path=$savepath --vocab-path=$rnn.wordlist [--hidden-size=$size]
+#        [--num-steps=$steps]
 #
 # One example recipe is at egs/ami/s5/local/tfrnnlm/run_lstm.sh
 
@@ -26,6 +27,7 @@ from __future__ import division
 from __future__ import print_function
 
 import sys
+import os
 
 import inspect
 import time
@@ -39,7 +41,8 @@ flags = tf.flags
 logging = tf.logging
 
 flags.DEFINE_integer("hidden-size", 200, "hidden dim of RNN")
-
+flags.DEFINE_integer("num-steps", 20, "number of RNN unrolled steps")
+flags.DEFINE_float("learning-rate", 1.0, "initial learning rate")
 flags.DEFINE_string("data-path", None,
                     "Where the training/test data is stored.")
 flags.DEFINE_string("vocab-path", None,
@@ -51,22 +54,50 @@ flags.DEFINE_bool("use-fp16", False,
 
 FLAGS = flags.FLAGS
 
-class Config(object):
+# For 64M words train set, 10K voc
+class ConfigSmall(object):
   init_scale = 0.1
   learning_rate = 1.0
   max_grad_norm = 5
   num_layers = 2
   num_steps = 20
   hidden_size = 200
-  max_epoch = 2 # 4 , 2
-  max_max_epoch = 20   # 13, 10
+  max_epoch = 4
+  max_max_epoch = 20
   keep_prob = 1.0
-  lr_decay = 0.5  # 0.5
+  lr_decay = 0.8
+  batch_size = 64
+
+# For 320M words train set, 50K voc
+class ConfigMedium(object):
+  init_scale = 0.1
+  learning_rate = 1.0
+  max_grad_norm = 5
+  num_layers = 2
+  num_steps = 10
+  hidden_size = 800
+  max_epoch = 1
+  max_max_epoch = 5
+  keep_prob = 1.0
+  lr_decay = 0.75
+  batch_size = 64
+
+# For 600M words train set, 50K voc
+class ConfigLarge(object):
+  init_scale = 0.1
+  learning_rate = 1.0
+  max_grad_norm = 5
+  num_layers = 2
+  num_steps = 20
+  hidden_size = 1200
+  max_epoch = 1
+  max_max_epoch = 5
+  keep_prob = 1.0
+  lr_decay = 0.8
   batch_size = 64
 
 def data_type():
   return tf.float16 if FLAGS.use_fp16 else tf.float32
-
 
 class RnnlmInput(object):
   """The input data."""
@@ -106,11 +137,13 @@ class RnnlmModel(object):
       else:
         return tf.contrib.rnn.BasicLSTMCell(
             size, forget_bias=0.0, state_is_tuple=True)
+
     attn_cell = lstm_cell
     if is_training and config.keep_prob < 1:
       def attn_cell():
         return tf.contrib.rnn.DropoutWrapper(
             lstm_cell(), output_keep_prob=config.keep_prob)
+
     self.cell = tf.contrib.rnn.MultiRNNCell(
         [attn_cell() for _ in range(config.num_layers)], state_is_tuple=True)
 
@@ -144,6 +177,9 @@ class RnnlmModel(object):
 
     test_state_out = tf.reshape(tf.stack(axis=0, values=test_output_state), [config.num_layers, 2, 1, size], name="test_state_out")
     test_cell_out = tf.reshape(test_cell_output, [1, size], name="test_cell_out")
+    # in Kaldi wrapper, initial cell is computed as cell_output given initial_state and word_in
+    test_initial_cell = tf.identity(test_cell_out, name="test_initial_cell")
+
     # above is the first part of the graph for test
     # test-word-in
     #               > ---- > test-state-out
@@ -243,12 +279,6 @@ class RnnlmModel(object):
 def run_epoch(session, model, eval_op=None, verbose=False):
   """Runs the model on the given data."""
 
-  # re-initialize Dataset iterator
-  #print("About to initialize data iterator with:")
-  #print("   ", model.input.initializer, model.input.feed_dict)
-  #sys.stdout.flush()
-  #session.run(model.input.initializer, model.input.feed_dict)
-
   start_time = time.time()
   costs = 0.0
   iters = 0
@@ -271,8 +301,6 @@ def run_epoch(session, model, eval_op=None, verbose=False):
       feed_dict[c] = state[i].c
       feed_dict[h] = state[i].h
 
-    #feed_dict.update(model.input.feed_dict)
-
     vals = session.run(fetches, feed_dict)
     cost = vals["cost"]
     state = vals["final_state"]
@@ -290,17 +318,19 @@ def run_epoch(session, model, eval_op=None, verbose=False):
 
 
 def get_config():
-  return Config()
+  return ConfigMedium()
 
 def main(_):
   if not FLAGS.data_path:
     raise ValueError("Must set --data_path to RNNLM data directory")
 
   raw_data = reader.rnnlm_raw_data(FLAGS.data_path, FLAGS.vocab_path)
-  train_data, valid_data, _, word_map = raw_data
+  train_data, valid_data, dev_data, voc, word_map = raw_data
 
   config = get_config()
   config.hidden_size = FLAGS.hidden_size
+  config.num_steps = FLAGS.num_steps
+  config.learning_rate = FLAGS.learning_rate
   config.vocab_size = len(word_map)
   eval_config = get_config()
   eval_config.batch_size = 1
@@ -317,7 +347,8 @@ def main(_):
                              initializer=initializer,
                              partitioner=partitioner):
         m = RnnlmModel(is_training=True, config=config, input_=train_input)
-      tf.summary.scalar("Training Loss", m.cost)
+      # cost renormalized to num_steps=20 reference value
+      tf.summary.scalar("Training Loss", 20.*m.cost/float(config.num_steps))
       tf.summary.scalar("Learning Rate", m.lr)
 
     with tf.name_scope("Valid"):
@@ -326,7 +357,17 @@ def main(_):
                              initializer=initializer,
                              partitioner=partitioner):
         mvalid = RnnlmModel(is_training=False, config=config, input_=valid_input)
-      tf.summary.scalar("Validation Loss", mvalid.cost)
+      # cost renormalized to num_steps=20 reference value
+      tf.summary.scalar("Validation Loss", 20.*mvalid.cost/float(config.num_steps))
+
+    with tf.name_scope("Dev"):
+      dev_input = RnnlmInput(config=config, data=dev_data, name="DevInput")
+      with tf.variable_scope("Model", reuse=True, 
+                             initializer=initializer,
+                             partitioner=partitioner):
+        mdev = RnnlmModel(is_training=False, config=config, input_=dev_input)
+      # cost renormalized to num_steps=20 reference value
+      tf.summary.scalar("DevSet Loss", 20.*mdev.cost/float(config.num_steps))
 
     print("Done setting up the model.")
     sys.stdout.flush()
@@ -335,15 +376,25 @@ def main(_):
     data_feed_dict = dict()
     data_feed_dict.update(train_input.feed_dict)
     data_feed_dict.update(valid_input.feed_dict)
-    sv = tf.train.Supervisor(logdir=FLAGS.save_path,
-                             init_op=[tf.global_variables_initializer(),
-                                      train_input.initializer,
-                                      valid_input.initializer],
-                             init_feed_dict=data_feed_dict)  # , saver=saver)
+    data_feed_dict.update(dev_input.feed_dict)
+
+    #sv = tf.train.Supervisor(logdir=FLAGS.save_path,
+    #                           init_op=[tf.global_variables_initializer(),
+    #                                    train_input.initializer,
+    #                                    valid_input.initializer],
+    #                           init_feed_dict=data_feed_dict)
+
+    sv = tf.train.Supervisor(logdir=FLAGS.save_path)
+
     print("Started supervisor")
     sys.stdout.flush()
 
     with sv.managed_session() as session:
+
+      session.run([train_input.initializer,
+                   valid_input.initializer,
+                   dev_input.initializer],
+                  feed_dict=data_feed_dict)
 
       for i in range(config.max_max_epoch):
 
@@ -359,6 +410,10 @@ def main(_):
 
         valid_perplexity = run_epoch(session, mvalid)
         print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
+        sys.stdout.flush()
+
+        dev_perplexity = run_epoch(session, mdev)
+        print("Epoch: %d Dev Perplexity: %.3f" % (i + 1, dev_perplexity))
         sys.stdout.flush()
 
         if FLAGS.save_path:

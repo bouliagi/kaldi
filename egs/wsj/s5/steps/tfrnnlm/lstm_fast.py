@@ -59,8 +59,8 @@ class Config(object):
   num_layers = 2
   num_steps = 20
   hidden_size = 200
-  max_epoch = 4
-  max_max_epoch = 13
+  max_epoch = 2
+  max_max_epoch = 10 
   keep_prob = 1.0
   lr_decay = 0.8
   batch_size = 64
@@ -90,8 +90,9 @@ class RnnlmInput(object):
     self.batch_size = batch_size = config.batch_size
     self.num_steps = num_steps = config.num_steps
     self.epoch_size = ((len(data) // batch_size) - 1) // num_steps
-    self.input_data, self.targets = reader.rnnlm_producer(
-        data, batch_size, num_steps, name=name)
+    #self.input_data, self.targets = reader.rnnlm_producer(
+    #    data, batch_size, num_steps, name=name)
+    self.initializer, self.next_element, self.feed_dict = reader.rnnlm_producer(data, batch_size, num_steps, name=name)
 
 
 class RnnlmModel(object):
@@ -99,6 +100,7 @@ class RnnlmModel(object):
 
   def __init__(self, is_training, config, input_):
     self._input = input_
+    self.input_data, self.targets = input_.next_element
 
     batch_size = input_.batch_size
     num_steps = input_.num_steps
@@ -146,7 +148,7 @@ class RnnlmModel(object):
       self.embedding = tf.get_variable(
           "embedding", [vocab_size, size], dtype=data_type())
 
-      inputs = tf.nn.embedding_lookup(self.embedding, input_.input_data)
+      inputs = tf.nn.embedding_lookup(self.embedding, self.input_data)
       test_inputs = tf.nn.embedding_lookup(self.embedding, test_word_in)
 
     # test time
@@ -172,7 +174,8 @@ class RnnlmModel(object):
     softmax_w = tf.get_variable(
         "softmax_w", [size, vocab_size], dtype=data_type())
     softmax_b = tf.get_variable("softmax_b", [vocab_size], dtype=data_type())
-    softmax_b = softmax_b - 9.0
+    norm_const = tf.constant(9.0, dtype=data_type())
+    softmax_b = softmax_b - norm_const
 
     test_logits = tf.matmul(cellout_placeholder, tf.transpose(tf.nn.embedding_lookup(tf.transpose(softmax_w), test_word_out[0]))) + softmax_b[test_word_out[0,0]]
 
@@ -203,7 +206,7 @@ class RnnlmModel(object):
     logits = tf.matmul(output, softmax_w) + softmax_b
     loss = tf.contrib.legacy_seq2seq.sequence_loss_by_example(
         [logits],
-        [tf.reshape(input_.targets, [-1])],
+        [tf.reshape(self.targets, [-1])],
         [tf.ones([batch_size * num_steps], dtype=data_type())],
         softmax_loss_function=new_softmax)
     self._cost = cost = tf.reduce_sum(loss) / batch_size
@@ -294,6 +297,7 @@ def get_config():
 def main(_):
   if not FLAGS.data_path:
     raise ValueError("Must set --data_path to RNNLM data directory")
+  print("FLAGS.hidden_size:", FLAGS.hidden_size)
 
   raw_data = reader.rnnlm_raw_data(FLAGS.data_path, FLAGS.vocab_path)
   train_data, valid_data, _, word_map = raw_data
@@ -304,41 +308,63 @@ def main(_):
   eval_config = get_config()
   eval_config.batch_size = 1
   eval_config.num_steps = 1
+  print("Config:")
+  print("hidden_size:", config.hidden_size, "num_layers:", config.num_layers)
+  sys.stdout.flush()
 
   with tf.Graph().as_default():
     initializer = tf.random_uniform_initializer(-config.init_scale,
                                                 config.init_scale)
+    partitioner = tf.variable_axis_size_partitioner((64 << 20) - 1)
 
     with tf.name_scope("Train"):
       train_input = RnnlmInput(config=config, data=train_data, name="TrainInput")
-      with tf.variable_scope("Model", reuse=None, initializer=initializer):
+      with tf.variable_scope("Model", reuse=None, 
+                             initializer=initializer,
+                             partitioner=partitioner):
         m = RnnlmModel(is_training=True, config=config, input_=train_input)
       tf.summary.scalar("Training Loss", m.cost)
       tf.summary.scalar("Learning Rate", m.lr)
 
     with tf.name_scope("Valid"):
       valid_input = RnnlmInput(config=config, data=valid_data, name="ValidInput")
-      with tf.variable_scope("Model", reuse=True, initializer=initializer):
+      with tf.variable_scope("Model", reuse=True, 
+                             initializer=initializer,
+                             partitioner=partitioner):
         mvalid = RnnlmModel(is_training=False, config=config, input_=valid_input)
       tf.summary.scalar("Validation Loss", mvalid.cost)
 
-    sv = tf.train.Supervisor(logdir=FLAGS.save_path)
+    # Need to initialize iterators before session is run
+    data_feed_dict = dict()
+    data_feed_dict.update(train_input.feed_dict)
+    data_feed_dict.update(valid_input.feed_dict)
+    sv = tf.train.Supervisor(logdir=FLAGS.save_path,
+                             init_op=[tf.global_variables_initializer(),
+                                      train_input.initializer,
+                                      valid_input.initializer],
+                             init_feed_dict=data_feed_dict)
+
     with sv.managed_session() as session:
       for i in range(config.max_max_epoch):
+
         lr_decay = config.lr_decay ** max(i + 1 - config.max_epoch, 0.0)
         m.assign_lr(session, config.learning_rate * lr_decay)
-
         print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
+        sys.stdout.flush()
+
         train_perplexity = run_epoch(session, m, eval_op=m.train_op,
                                      verbose=True)
-
         print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
+        sys.stdout.flush()
+
         valid_perplexity = run_epoch(session, mvalid)
         print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
+        sys.stdout.flush()
 
-      if FLAGS.save_path:
-        print("Saving model to %s." % FLAGS.save_path)
-        sv.saver.save(session, FLAGS.save_path)
+        if FLAGS.save_path:
+          print("Saving model to %s." % FLAGS.save_path)
+          sys.stdout.flush()
+          sv.saver.save(session, FLAGS.save_path)
 
 if __name__ == "__main__":
   tf.app.run()
