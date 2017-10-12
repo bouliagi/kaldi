@@ -24,6 +24,7 @@
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
+#include "tensorflow/core/graph/default_device.h"
 
 #include "tfrnnlm/tensorflow-rnnlm.h"
 #include "util/stl-utils.h"
@@ -61,7 +62,7 @@ void SetUnkPenalties(const string &filename,
 
 // Read tensorflow checkpoint files
 void KaldiTfRnnlmWrapper::ReadTfModel(const std::string &tf_model_path,
-                                      int32 num_threads) {
+                                      int32 num_threads, string device) {
   string graph_path = tf_model_path + ".meta";
 
   tensorflow::SessionOptions session_options;
@@ -81,6 +82,9 @@ void KaldiTfRnnlmWrapper::ReadTfModel(const std::string &tf_model_path,
   if (!status.ok()) {
     KALDI_ERR << status.ToString();
   }
+
+  // G.B.:set GPU options: this should be definable at run-time
+  tensorflow::SetDefaultDevice(device, &graph_def);
 
   // Add the graph to the session
   status = session_->Create(graph_def.graph_def());
@@ -107,7 +111,7 @@ KaldiTfRnnlmWrapper::KaldiTfRnnlmWrapper(
     const std::string &word_symbol_table_rxfilename,
     const std::string &unk_prob_file,
     const std::string &tf_model_path): opts_(opts) {
-  ReadTfModel(tf_model_path, opts.num_threads);
+  ReadTfModel(tf_model_path, opts.num_threads, opts.device);
 
   fst::SymbolTable *fst_word_symbols = NULL;
   if (!(fst_word_symbols =
@@ -199,7 +203,11 @@ void KaldiTfRnnlmWrapper::AcquireInitialTensors() {
       {"Train/Model/test_state_in", initial_context_},
     };
 
-    status = session_->Run(inputs, {"Train/Model/test_cell_out"}, {}, &state);
+
+    // in original Kaldi tfrnnlm implementation, was test_cell_out
+    // now test_initial_cell is identity(test_cell_out)
+
+    status = session_->Run(inputs, {"Train/Model/test_initial_cell"}, {}, &state);
     if (!status.ok()) {
       KALDI_ERR << status.ToString();
     }
@@ -220,13 +228,14 @@ BaseFloat KaldiTfRnnlmWrapper::GetLogProb(int32 word,
   thisword.scalar<int32>()() = word;
   std::vector<Tensor> outputs;
 
-  if (context_out != NULL) {
-    inputs = {
+  // G.B. moved out of the conditional, always use same inputs
+  inputs = {
       {"Train/Model/test_word_in", thisword},
       {"Train/Model/test_word_out", thisword},
       {"Train/Model/test_state_in", context_in},
       {"Train/Model/test_cell_in", cell_in},
-    };
+  };
+  if (context_out != NULL) {
 
     // The session will initialize the outputs
     // Run the session, evaluating our "c" operation from the graph
@@ -241,10 +250,11 @@ BaseFloat KaldiTfRnnlmWrapper::GetLogProb(int32 word,
     *context_out = outputs[1];
     *new_cell = outputs[2];
   } else {
-    inputs = {
-      {"Train/Model/test_word_out", thisword},
-      {"Train/Model/test_cell_in", cell_in},
-    };
+    // G.B. use exactly same inputs, just don't compute same outputs
+    //inputs = {
+    //  {"Train/Model/test_word_out", thisword},
+    //  {"Train/Model/test_cell_in", cell_in},
+    //};
 
     // Run the session, evaluating our "c" operation from the graph
     Status status = session_->Run(inputs,
